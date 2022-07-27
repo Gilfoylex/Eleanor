@@ -19,7 +19,7 @@ use tokio::{
     sync::mpsc::UnboundedSender
 };
 
-use super::tun_sockets::{SocketControl, SharedConnectionControl, Connection, ManagerNotify, SocketCreation, TunSocket};
+use super::tun_sockets::{SocketControl, SharedConnectionControl, TunConnector, ManagerNotify, SocketCreation, TunSocket};
 use super::redirection::handle_redir_client;
 
 // NOTE: Default buffer could contain 20 AEAD packets
@@ -27,12 +27,16 @@ const DEFAULT_TCP_SEND_BUFFER_SIZE: u32 = 0x3FFF * 20;
 const DEFAULT_TCP_RECV_BUFFER_SIZE: u32 = 0x3FFF * 20;
 
 pub struct TcpTun {
+    pub manager_notify: Arc<ManagerNotify>,
+    pub manager_socket_creation_tx: UnboundedSender<SocketCreation>,
 }
 
 impl TcpTun {
     pub async fn handle_packet(
-        manager_notify: Arc<ManagerNotify>, manager_socket_creation_tx: &UnboundedSender<SocketCreation>,
-        src_addr: SocketAddr, dst_addr: SocketAddr, tcp_packet: &TcpPacket<&[u8]>) -> std::io::Result<()> {
+        &self, 
+        src_addr: SocketAddr,
+        dst_addr: SocketAddr,
+        tcp_packet: &TcpPacket<&[u8]>) -> std::io::Result<()> {
         // TCP first handshake packet, create a new Connection
         if tcp_packet.syn() && !tcp_packet.ack() {
             let send_buffer_size = DEFAULT_TCP_SEND_BUFFER_SIZE;
@@ -62,14 +66,14 @@ impl TcpTun {
                 is_closed: false,
             }));
 
-            let _ = manager_socket_creation_tx.send(SocketCreation {
+            let _ = self.manager_socket_creation_tx.send(SocketCreation {
                 control: control.clone(),
                 tun_socket: TunSocket::TunTcpSocket(socket) 
             });
 
-            let connection = Connection {
+            let connection = TunConnector {
                 control, 
-                manager_notify: manager_notify
+                manager_notify: self.manager_notify.clone()
             };
 
             tokio::spawn(async move {

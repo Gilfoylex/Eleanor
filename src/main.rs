@@ -2,6 +2,9 @@ use std::io;
 use env_logger::Env;
 
 mod tunproxy;
+mod outbound_connectors;
+mod error;
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let env = Env::default()
@@ -14,5 +17,6 @@ async fn main() -> io::Result<()> {
     builder = builder.address("10.0.0.0/24".parse().unwrap()).name("tun0");
     let server = builder.build()?;
     _ = server.run().await;
+
     Ok(())
 }

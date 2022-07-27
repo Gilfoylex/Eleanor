@@ -1,19 +1,19 @@
 use std::{
     io,
     net::SocketAddr,
-    os::unix::io::AsRawFd,
 };
 
 use log::{error, trace};
 
 use tokio::{
     net::{TcpSocket},
-    io::{AsyncRead, AsyncWrite, copy_bidirectional, AsyncWriteExt}
+    io::{AsyncRead, AsyncWrite, copy_bidirectional, AsyncWriteExt, AsyncReadExt}
 };
 
-use super::tun_sockets::Connection;
+use super::tun_sockets::TunConnector;
+use crate::outbound_connectors::{trojan, tls, Address};
 
-pub async fn handle_redir_client(tun_stream : Connection, peer_addr: SocketAddr, dst_addr: SocketAddr) -> io::Result<()> {
+pub async fn handle_redir_client(tun_stream : TunConnector, peer_addr: SocketAddr, dst_addr: SocketAddr) -> io::Result<()> {
     // Get forward address from socket
     //
     // Try to convert IPv4 mapped IPv6 address for dual-stack mode.
@@ -31,7 +31,7 @@ pub async fn handle_redir_client(tun_stream : Connection, peer_addr: SocketAddr,
 ///
 /// This method must be called after handshaking with client (for example, socks5 handshaking)
 async fn establish_client_tcp_redir<'a>(
-    mut stream: Connection,
+    mut stream: TunConnector,
     peer_addr: SocketAddr,
     addr: SocketAddr,
 ) -> io::Result<()> {
@@ -40,10 +40,21 @@ async fn establish_client_tcp_redir<'a>(
     //     SocketAddr::V6(..) => TcpSocket::new_v6()?,
     // };
 
-    let socket = TcpSocket::new_v4()?;
-    set_bindtodevice(&socket, "ens160".as_ref())?;
+    //let socket = TcpSocket::new_v4()?;
+    //set_bindtodevice(&socket, "ens160".as_ref())?;
 
-    let mut remote = socket.connect(addr).await?;
+    let con = tls::TlsConfig {
+        addr: Address::DomainNameAddress(String::from("gilfoylex.tk"), 443),
+        sni: String::from("gilfoylex.tk"),
+        cipher: None,
+        cert: None
+    };
+    let tls = tls::TlsConnector::new(con)?;
+    let con2 = trojan::TrojanConfig { password: String::from("yjxfire")};
+    let trojan = trojan::TrojanConnector::new(&con2, tls);
+    let mut remote = trojan.connect_tcp(Address::SocketAddress(addr)).await?;
+    //let mut remote = socket.connect(addr).await?;
+
     return establish_tcp_tunnel_bypassed(&mut stream, &mut remote, peer_addr, addr).await;
 }
 
@@ -82,27 +93,7 @@ where
     Ok(())
 }
 
-fn set_bindtodevice<S: AsRawFd>(socket: &S, iface: &str) -> io::Result<()> {
-    let iface_bytes = iface.as_bytes();
 
-    unsafe {
-        let ret = libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_BINDTODEVICE,
-            iface_bytes.as_ptr() as *const _ as *const libc::c_void,
-            iface_bytes.len() as libc::socklen_t,
-        );
-
-        if ret != 0 {
-            let err = io::Error::last_os_error();
-            error!("set SO_BINDTODEVICE error: {}", err);
-            return Err(err);
-        }
-    }
-
-    Ok(())
-}
 
 
 pub async fn write_packet_with_pi<W: AsyncWrite + Unpin>(writer: &mut W, packet: &[u8]) -> io::Result<()> {

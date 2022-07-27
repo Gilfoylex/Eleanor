@@ -31,7 +31,7 @@ mod tcp;
 mod virt_device;
 mod tun_sockets;
 mod redirection;
-use tun_sockets::{SocketCreation, TunSocket, TunTransfer, ManagerNotify};
+use tun_sockets::{SocketCreation, TunSocket, TunTransfer, ManagerNotify, SharedConnectionControl, SocketControl};
 use tcp::TcpTun;
 use ip_packet::IpPacket;
 use redirection::write_packet_with_pi;
@@ -178,14 +178,13 @@ impl Tun {
                             IpProtocol::Tcp => {
                                 let handle = socket_handle.clone();
                                 let socket = iface.get_socket::<TcpSocket>(handle);
-                                //let control = &tun_transfer.control;
                                 TcpTun::hanlde_tun_socket(
                                     &mut sockets_to_remove,
                                     handle,
                                      socket, &tun_transfer.control);
                             },
                             IpProtocol::Udp => {
-
+                
                             },
                             //IpProtocol::Ipv6Route => todo!(),
                             //IpProtocol::Ipv6Frag => todo!(),
@@ -213,8 +212,11 @@ impl Tun {
         };
 
         let manager_notify = Arc::new(ManagerNotify::new(manager_handle.thread().clone()));
+        let manager_notify_clone = manager_notify.clone();
+        let manager_socket_creation_tx_clone = manager_socket_creation_tx.clone();
         let tcp_tun = TcpTun{
-            
+            manager_notify: manager_notify_clone,
+            manager_socket_creation_tx: manager_socket_creation_tx_clone
         };
 
         Tun { device, iface_rx, iface_tx, manager_notify, manager_socket_creation_tx, manager_running, tcp_tun}
@@ -239,10 +241,15 @@ impl Tun {
                     if let Err(err) = self.handle_tun_frame(packet).await {
                         error!("[TUN] handle IP frame failed, error: {}", err);
                     }
+
+                    // 数据写入虚拟网卡，驱动smoltcp运行
+                    self.drive_interface_state(packet).await;
                 }
 
                 packet = self.iface_rx.recv() => {
                     let packet = packet.expect("channel closed unexpectedly");
+
+                    // 数据回写到网卡
                     if let Err(err) = write_packet_with_pi(&mut self.device, &packet).await {
                         error!("[TUN] failed to set packet information, error: {}, {:?}", err, ByteStr::new(&packet));
                     } else {
@@ -260,13 +267,6 @@ impl Tun {
 
         // Wake up and poll the interface.
         self.manager_notify.notify();
-    }
-
-    pub async fn recv_packet(&mut self) -> Vec<u8> {
-        match self.iface_rx.recv().await {
-            Some(v) => v,
-            None => unreachable!("channel closed unexpectedly"),
-        }
     }
 
     async fn handle_tun_frame(&mut self, frame: &[u8]) -> smoltcp::Result<()> {
@@ -295,7 +295,7 @@ impl Tun {
                 trace!("[TUN] TCP packet {} -> {} {}", src_addr, dst_addr, tcp_packet);
 
                 // TCP first handshake packet.
-                if let Err(err) = TcpTun::handle_packet(self.manager_notify.clone(), &self.manager_socket_creation_tx, src_addr, dst_addr, &tcp_packet).await {
+                if let Err(err) = self.tcp_tun.handle_packet(src_addr, dst_addr, &tcp_packet).await {
                     error!(
                         "handle TCP packet failed, error: {}, {} <-> {}, packet: {:?}",
                         err, src_addr, dst_addr, tcp_packet
@@ -330,9 +330,6 @@ impl Tun {
                 return Ok(());
             }
         }
-
-        // 数据写入虚拟网卡，驱动smoltcp运行
-        self.drive_interface_state(frame).await;
 
         Ok(())
     }

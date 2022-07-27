@@ -11,7 +11,7 @@ use std::{
     thread::Thread,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf}
+    io::{AsyncRead, AsyncWrite, ReadBuf},
 };
 use spin::Mutex as SpinMutex;
 
@@ -53,19 +53,19 @@ pub struct SocketCreation {
     pub tun_socket: TunSocket
 }
 
-pub struct Connection {
+pub struct TunConnector {
     pub control: SharedConnectionControl,
     pub manager_notify: Arc<ManagerNotify>,
 }
 
-impl Drop for Connection {
+impl Drop for TunConnector {
     fn drop(&mut self) {
         let mut control = self.control.lock();
         control.is_closed = true;
     }
 }
 
-impl AsyncRead for Connection {
+impl AsyncRead for TunConnector {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let mut control = self.control.lock();
 
@@ -98,7 +98,7 @@ impl AsyncRead for Connection {
     }
 }
 
-impl AsyncWrite for Connection {
+impl AsyncWrite for TunConnector {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let mut control = self.control.lock();
         if control.is_closed {
